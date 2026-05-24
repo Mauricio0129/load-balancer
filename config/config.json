@@ -1,0 +1,18 @@
+{
+    "host": "localhost",
+    
+    "port": "8080",
+
+    "backends": {
+        "www": ["localhost:9000", "localhost:9001", "localhost:9002"],
+        "api": ["localhost:9050", "localhost:9051", "localhost:9052"]
+
+    },
+
+    "tls": {
+        "enabled": false,
+        "certfile": "./somefile",
+        "keyfile": "./somekey"
+    }
+
+}
