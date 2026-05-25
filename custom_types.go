@@ -26,7 +26,8 @@ type Tls struct {
 }
 
 type Handler struct {
-	config *Config
+	config       *Config
+	poolCounters map[string]*int
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

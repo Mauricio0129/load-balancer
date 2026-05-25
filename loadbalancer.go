@@ -10,6 +10,15 @@ import (
 func startLoadBalancer(config *Config) {
 	fmt.Printf("Starting load balancer on %s:%s\n", config.Host, config.Port)
 
+	handler := &Handler{
+		config:       config,
+		poolCounters: make(map[string]*int),
+	}
+
+	for key := range config.Backends {
+		handler.poolCounters[key] = new(int)
+	}
+
 	http.Handle("/", &Handler{config: config})
 
 	if config.Tls_config.Enabled == true {
