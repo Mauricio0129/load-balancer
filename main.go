@@ -20,5 +20,7 @@ func main() {
 		log.Fatalf("Error parsing config file: %v", err)
 	}
 
-	fmt.Printf("Loaded config: %+v\n", config)
+	fmt.Printf("Loaded config successfully")
+
+	startLoadBalancer(config)
 }
