@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"net/http"
 	"time"
 )
@@ -12,6 +11,7 @@ type Config struct {
 	Backends        map[string][]string `json:"backends"`
 	Tls_config      Tls                 `json:"tls"`
 	Timeouts_config Timeouts            `json:"timeouts"`
+	Mode            int                 `json:"mode"`
 }
 
 type Timeouts struct {
@@ -27,7 +27,7 @@ type Tls struct {
 
 type Handler struct {
 	config       *Config
-	poolCounters map[string]*int
+	poolCounters map[string]*int64
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +42,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		controller.SetReadDeadline(time.Now().Add(2*time.Second + (time.Duration(secondsNeeded) * time.Second)))
 	}
 
-	io.WriteString(w, r.URL.Path)
+	switch h.config.Mode {
+	case 0:
+		// Round Robin
+		roundRobinLoadBalancer(h, r, w)
+	case 1:
+		// Least Connections
+		leastConnectionsLoadBalancer(h, r, w)
+	default:
+		// Default to Round Robin
+		roundRobinLoadBalancer(h, r, w)
+	}
 
 }
 
