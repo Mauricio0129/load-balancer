@@ -19,6 +19,8 @@
         "readheader_timeout": 7,
         "write_timeout": 7
 
-    }
+    },
+    "max_queue": 100,
 
+    "mode": 1
 }
