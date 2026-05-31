@@ -12,11 +12,13 @@ type Config struct {
 	Timeouts_config Timeouts            `json:"timeouts"`
 	Mode            int                 `json:"mode"`
 	Max_queue       int                 `json:"max_queue"`
+	Maxidle_conns   int                 `json:"max_idle_conns"`
 }
 
 type Timeouts struct {
-	ReadHeader   int `json:"readheader_timeout"`
-	WriteTimeout int `json:"write_timeout"`
+	ReadHeader    int `json:"readheader_timeout"`
+	WriteTimeout  int `json:"write_timeout"`
+	ClientTimeout int `json:"client_timeout"`
 }
 
 type Tls struct {
@@ -33,31 +35,5 @@ type Handler struct {
 	config            *Config
 	poolCounters      map[string]*int64
 	concurrency_limit chan struct{}
-}
-
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-
-	select {
-	case h.concurrency_limit <- struct{}{}:
-		defer func() { <-h.concurrency_limit }()
-
-		h.setAdaptiveDeadlines(w, r)
-
-		switch h.config.Mode {
-		case 0:
-			// Round Robin
-			roundRobinLoadBalancer(h, r, w)
-		case 1:
-			// Least Connections
-			leastConnectionsLoadBalancer(h, r, w)
-		default:
-			// Default to Round Robin
-			roundRobinLoadBalancer(h, r, w)
-		}
-
-	default:
-
-		h.rejectTraffic(w)
-		return
-	}
+	client            *http.Client
 }

@@ -17,10 +17,12 @@
 
     "timeouts": {
         "readheader_timeout": 7,
-        "write_timeout": 7
+        "write_timeout": 7,
+        "client_timeout": 7
 
     },
     "max_queue": 100,
+    "max_idle_conns": 100,
 
     "mode": 1
 }
