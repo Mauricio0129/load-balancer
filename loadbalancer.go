@@ -6,12 +6,15 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
 func startLoadBalancer(config_data *Config) {
 	fmt.Printf("Starting load balancer on %s:%s\n", config_data.Host, config_data.Port)
 	handler := CreateHandler(config_data) // initialize the handler with the configuration
+
+	go handler.StartHealthChecks()
 
 	http.Handle("/", handler)
 
@@ -116,17 +119,38 @@ func (h *Handler) rejectTraffic(w http.ResponseWriter) {
 // --- Trafic balancing logic  ---
 
 func roundRobinLoadBalancer(handler *Handler, r *http.Request, w http.ResponseWriter) {
-	// to do: implement round robin load balancing
+	hostKey := r.Host // extract the host from the incoming request to determine which backend pool to use
+	fmt.Print("Host: ", hostKey, "\n")
+	perFlightSnapshot := handler.backends.Load()
+	perFlightBackends := perFlightSnapshot.(map[string][]string)
+
+	// Check if there are any backends available for the requested host
+	if len(perFlightBackends[hostKey]) == 0 {
+		http.Error(w, "503 Service Unavailable: No backends available for 1 the requested host", http.StatusServiceUnavailable)
+		return
+	}
+
+	counterPointer := handler.poolCounters[hostKey]
+	localCounter := atomic.AddInt64(counterPointer, 1) - 1 // atomically increment the counter and get the current value
+
+	lenghtOfBackends := len(perFlightBackends[hostKey]) // get the number of backends for the requested host to calculate the index of the backend to use
+
+	backend := perFlightBackends[hostKey][localCounter%int64(lenghtOfBackends)] // select the backend based on the counter value and the number of backends
+	fmt.Printf(r.URL.Host)
+	handler.dispatchRequest(r, w, backend) // dispatch the request to the selected backend
 }
 
 func leastConnectionsLoadBalancer(handler *Handler, r *http.Request, w http.ResponseWriter) {
 	// to do: implement least connections load balancing
 }
 
+// --- Health check logic  ---
+func (h *Handler) StartHealthChecks() {
+	// to do: implement health check logic to monitor backend servers and update the list of available backends accordingly
+}
+
 // --- Inittialization logic  ---
 func CreateHandler(config_data *Config) *Handler {
-
-	fmt.Printf("Starting load balancer on %s:%s\n", config_data.Host, config_data.Port)
 
 	handler := &Handler{
 		config:            config_data,
@@ -135,13 +159,17 @@ func CreateHandler(config_data *Config) *Handler {
 	}
 
 	// Initialize pool counters for each backend
+	initalBackends := make(map[string][]string)
 	var numberOfBackends int
 	for key, value := range config_data.Backends {
+		initalBackends[key] = value
+
 		handler.poolCounters[key] = new(int64)
 		numberOfBackends += len(value)
 
 	}
 
+	handler.backends.Store(initalBackends)
 	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		log.Fatalf("Critical: Failed to assert http.DefaultTransport to *http.Transport")

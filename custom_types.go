@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"sync/atomic"
 )
 
 type Config struct {
@@ -36,4 +37,5 @@ type Handler struct {
 	poolCounters      map[string]*int64
 	concurrency_limit chan struct{}
 	client            *http.Client
+	backends          atomic.Value
 }
