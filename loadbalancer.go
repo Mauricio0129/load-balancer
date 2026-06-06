@@ -118,17 +118,23 @@ func (h *Handler) rejectTraffic(w http.ResponseWriter) {
 
 // --- Trafic balancing logic  ---
 
+func verifyrequest(handler *Handler, domain string, w http.ResponseWriter) bool {
+	_, ok := handler.config.Backends[domain]
+	if !ok {
+		http.Error(w, "503 Service Unavailable: No backends available for 1 the requested host", http.StatusServiceUnavailable)
+	}
+	return ok
+}
+
 func roundRobinLoadBalancer(handler *Handler, r *http.Request, w http.ResponseWriter) {
 	hostKey := r.Host // extract the host from the incoming request to determine which backend pool to use
-	fmt.Print("Host: ", hostKey, "\n")
+
+	if !verifyrequest(handler, hostKey, w) {
+		return // Stop execution here because the helper already sent the 503 error!
+	}
+
 	perFlightSnapshot := handler.backends.Load()
 	perFlightBackends := perFlightSnapshot.(map[string][]string)
-
-	// Check if there are any backends available for the requested host
-	if len(perFlightBackends[hostKey]) == 0 {
-		http.Error(w, "503 Service Unavailable: No backends available for 1 the requested host", http.StatusServiceUnavailable)
-		return
-	}
 
 	counterPointer := handler.poolCounters[hostKey]
 	localCounter := atomic.AddInt64(counterPointer, 1) - 1 // atomically increment the counter and get the current value
@@ -137,11 +143,50 @@ func roundRobinLoadBalancer(handler *Handler, r *http.Request, w http.ResponseWr
 
 	backend := perFlightBackends[hostKey][localCounter%int64(lenghtOfBackends)] // select the backend based on the counter value and the number of backends
 	fmt.Printf(r.URL.Host)
-	handler.dispatchRequest(r, w, backend) // dispatch the request to the selected backend
+	url := "http://" + backend + r.URL.Path // construct the URL for the selected backend
+	handler.dispatchRequest(r, w, url)      // dispatch the request to the selected backend
 }
 
 func leastConnectionsLoadBalancer(handler *Handler, r *http.Request, w http.ResponseWriter) {
-	// to do: implement least connections load balancing
+	hostKey := r.Host
+
+	if !verifyrequest(handler, hostKey, w) {
+		return // Stop execution here because the helper already sent the 503 error!
+	}
+
+	data := handler.connections.Load()
+
+	snapshot, ok := data.(map[string]map[string]*int64)
+	if !ok {
+		http.Error(w, "503 Service Unavailable: Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	backends, ok := snapshot[hostKey]
+	if !ok || len(backends) == 0 {
+		http.Error(w, "503 Service Unavailable: No backends available for the requested host", http.StatusServiceUnavailable)
+		return
+	}
+
+	var server string
+	var couunter *int64
+	for backend, connections := range backends {
+		if server == "" {
+			server = backend
+			couunter = connections
+		} else if *connections < *couunter {
+			server = backend
+			couunter = connections
+		}
+	}
+
+	atomic.AddInt64(couunter, 1)
+	defer func() { // ensure that the connection count is decremented after the request is handled, even if an error occurs
+		atomic.AddInt64(couunter, -1)
+	}()
+
+	url := "http://" + server + r.URL.Path
+	handler.dispatchRequest(r, w, url)
 }
 
 // --- Health check logic  ---
@@ -158,18 +203,30 @@ func CreateHandler(config_data *Config) *Handler {
 		concurrency_limit: make(chan struct{}, config_data.Max_queue), // Example concurrency limit of 100
 	}
 
-	// Initialize pool counters for each backend
-	initalBackends := make(map[string][]string)
 	var numberOfBackends int
-	for key, value := range config_data.Backends {
-		initalBackends[key] = value
+	var perBackendConnectionsCounters map[string]map[string]*int64
 
+	if config_data.Mode == 1 {
+		perBackendConnectionsCounters = make(map[string]map[string]*int64)
+	}
+
+	for key, value := range config_data.Backends {
 		handler.poolCounters[key] = new(int64)
 		numberOfBackends += len(value)
 
+		if config_data.Mode == 1 {
+			perBackendConnectionsCounters[key] = make(map[string]*int64)
+			for _, backend := range value {
+				perBackendConnectionsCounters[key][backend] = new(int64)
+			}
+		}
+
 	}
 
-	handler.backends.Store(initalBackends)
+	handler.connections.Store(perBackendConnectionsCounters)
+	handler.backends.Store(config_data.Backends)
+
+	// to do: Move out the HTTP client initialization to a separate function and implement connection pooling and timeouts based on the configuration settings
 	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		log.Fatalf("Critical: Failed to assert http.DefaultTransport to *http.Transport")

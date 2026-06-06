@@ -38,4 +38,5 @@ type Handler struct {
 	concurrency_limit chan struct{}
 	client            *http.Client
 	backends          atomic.Value
+	connections       atomic.Value
 }
