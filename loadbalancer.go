@@ -142,9 +142,8 @@ func roundRobinLoadBalancer(handler *Handler, r *http.Request, w http.ResponseWr
 	lenghtOfBackends := len(perFlightBackends[hostKey]) // get the number of backends for the requested host to calculate the index of the backend to use
 
 	backend := perFlightBackends[hostKey][localCounter%int64(lenghtOfBackends)] // select the backend based on the counter value and the number of backends
-	fmt.Printf(r.URL.Host)
-	url := "http://" + backend + r.URL.Path // construct the URL for the selected backend
-	handler.dispatchRequest(r, w, url)      // dispatch the request to the selected backend
+	url := "http://" + backend + r.URL.Path                                     // construct the URL for the selected backend
+	handler.dispatchRequest(r, w, url)                                          // dispatch the request to the selected backend
 }
 
 func leastConnectionsLoadBalancer(handler *Handler, r *http.Request, w http.ResponseWriter) {
@@ -191,7 +190,89 @@ func leastConnectionsLoadBalancer(handler *Handler, r *http.Request, w http.Resp
 
 // --- Health check logic  ---
 func (h *Handler) StartHealthChecks() {
-	// to do: implement health check logic to monitor backend servers and update the list of available backends accordingly
+	auditTicker := time.NewTicker(5 * time.Minute)
+	recuperateTicker := time.NewTicker(2 * time.Minute)
+
+	go func() {
+		for {
+			select {
+			// Case 1 The 5-minute alarm goes off -> Check everything on working copies
+			case <-auditTicker.C:
+				log.Println("Running standard 5-minute health audit...")
+				h.executeHealthAudit()
+
+			// Case 2 The 2 minute alarm goes off -> Only check dead servers
+			case <-recuperateTicker.C:
+				log.Println("Running fast 30-second recovery check...")
+				h.recuperateDeadBackends()
+			}
+		}
+	}()
+}
+
+func (h *Handler) executeHealthAudit() {
+	if h.config.Mode == 0 {
+		data := h.backends.Load()
+		snapshot, ok := data.(map[string][]string)
+		if !ok {
+			log.Printf("Error: Failed to assert backends to the expected type during health check")
+			return
+		}
+
+		healthyBackends := make(map[string][]string)
+		for host, backends := range snapshot {
+			for _, backend := range backends {
+				url := "http://" + backend + "/health"
+				resp, err := h.client.Get(url)
+				if err == nil && resp.StatusCode == http.StatusOK {
+					healthyBackends[host] = append(healthyBackends[host], backend)
+					resp.Body.Close()
+				} else {
+					log.Printf("Health check failed for backend %s of host %s: %v", backend, host, err)
+					if resp != nil {
+						resp.Body.Close()
+					}
+				}
+			}
+		}
+		h.backends.Store(healthyBackends)
+
+	} else {
+		// load active data
+		connData := h.connections.Load()
+
+		// assert the type of the loaded data to the expected type
+		connSnapshot, ok := connData.(map[string]map[string]*int64)
+		if !ok {
+			log.Printf("Error: Failed to assert connections snapshot")
+			return
+		}
+
+		// 2 layer map 1st layer: host -> 2nd layer map 2nd layer: backend -> pointer to connections counter
+		healthyBackends := make(map[string]map[string]*int64)
+		for host, backends := range connSnapshot {
+			healthyBackends[host] = make(map[string]*int64)
+			for backend := range backends {
+				url := "http://" + backend + "/health"
+				resp, err := h.client.Get(url)
+				if err == nil && resp.StatusCode == http.StatusOK {
+					healthyBackends[host][backend] = backends[backend] // keep the same pointer to the connections counter for the healthy backend
+					resp.Body.Close()
+				} else {
+					log.Printf("Health check failed for backend %s of host %s: %v", backend, host, err)
+					if resp != nil {
+						resp.Body.Close()
+					}
+				}
+			}
+		}
+
+		h.connections.Store(healthyBackends)
+	}
+}
+
+func (h *Handler) recuperateDeadBackends() {
+	// to do: Implement logic to check the health of backends that were previously marked as unhealthy and add them back to the pool if they have recovered
 }
 
 // --- Inittialization logic  ---
