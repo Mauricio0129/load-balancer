@@ -6,10 +6,13 @@ A highly concurrent Layer 7 reverse proxy and load balancer written in Go. Built
 
 ## 🚀 Key Features
 
-- **Dynamic Environment Routing** — Supports path/cluster-based routing split across different environments (e.g., `www` data vs `api` endpoints).
+- **Host-Based Environment Routing** — Routes incoming traffic to isolated backend clusters based on the request's `Host` header (e.g., `api.localhost:8080` vs `www.localhost:8080`), enabling true multi-environment routing without path rewriting.
 - **Non-Blocking Channel Gatekeeper** — Implements a strict capacity boundary via weightless `struct{}{}` buffered channels rather than heavy worker pools, keeping CPU usage low.
-- **Timed Backoff Waiting Room** — Replaces instant traffic rejections with a thread-safe `time.After` channel race, giving burst traffic a microsecond-level window to acquire a slot.
-- **Context Pass-Through Protection** — Utilizes `http.NewRequestWithContext` to link client browser sockets directly to backend pipes, tearing down dead upstream processes instantly if a user disconnects.
+- **Timed Backoff Waiting Room** — Replaces instant traffic rejections with a thread-safe `time.After` channel race, giving burst traffic a 25ms window to acquire a slot before returning a 503.
+- **Adaptive Request Deadlines** — Sets read deadlines dynamically based on `Content-Length`, giving large payloads proportionally more time while keeping a hard 5s cap on requests with unknown body sizes — mitigating slowloris-style attacks.
+- **Context Pass-Through Protection** — Utilizes `http.NewRequestWithContext` to link client sockets directly to backend pipes, tearing down upstream connections instantly if a user disconnects.
+- **Lock-Free Backend Snapshots** — Stores backend lists and per-backend connection counters in `atomic.Value`, allowing goroutines to read routing state without mutexes or blocking.
+- **Dynamic Connection Pool Sizing** — Computes `MaxIdleConns` at startup as `(numberOfBackends × max_idle_conns) + numberOfBackends`, ensuring each backend gets a dedicated idle connection budget without starving others.
 - **Zero-Copy Byte Mirroring** — Streams data payloads via raw `[]byte` memory blocks, transparently reflecting backend status codes and headers with minimal allocation overhead.
 
 ---
@@ -44,13 +47,13 @@ All behavior is configured through a single JSON file at the root of the project
     "host": "localhost",
     "port": "8080",
     "backends": {
-        "www": ["localhost:9000", "localhost:9001", "localhost:9002"],
-        "api": ["localhost:9050", "localhost:9051", "localhost:9052"]
+        "api.localhost:8080": ["localhost:9000", "localhost:9001", "localhost:9002"],
+        "www.localhost:8080": ["localhost:9050", "localhost:9051", "localhost:9052"]
     },
     "tls": {
         "enabled": false,
-        "certfile": "./somefile",
-        "keyfile": "./somekey"
+        "certfile": "./cert.pem",
+        "keyfile": "./key.pem"
     },
     "timeouts": {
         "readheader_timeout": 7,
@@ -59,7 +62,7 @@ All behavior is configured through a single JSON file at the root of the project
     },
     "max_queue": 100,
     "max_idle_conns": 100,
-    "mode": 1
+    "mode": 0
 }
 ```
 
@@ -67,9 +70,9 @@ All behavior is configured through a single JSON file at the root of the project
 
 | Field | Description |
 |---|---|
-| `backends` | Map of environment clusters holding arrays of target physical server network locations. |
+| `backends` | Map of `Host` header keys to arrays of backend server addresses. Each key is matched against the incoming request's `Host` header. |
 | `max_queue` | Maximum concurrent request channel size before the timed backoff waiting room triggers. |
-| `max_idle_conns` | Base pooling limit used to calculate total safe connection caching sizes globally. |
+| `max_idle_conns` | Per-host idle connection budget. Total pool size is computed as `(backends × max_idle_conns) + backends`. |
 | `tls.enabled` | Toggle TLS termination at the proxy. Provide `certfile` and `keyfile` paths when enabled. |
 | `timeouts.*` | Per-phase HTTP timeout values in seconds (read header, write, client). |
 | `mode` | Load balancing algorithm selector — see options below. |
@@ -78,8 +81,8 @@ All behavior is configured through a single JSON file at the root of the project
 
 | Mode | Algorithm | Description |
 |---|---|---|
-| `0` | Atomic Round Robin | Distributes requests sequentially across all backends using an atomic counter. |
-| `1` | Atomic Least Connections | Routes each request to the backend currently handling the fewest active connections. |
+| `0` | Atomic Round Robin | Distributes requests sequentially across all backends using a per-cluster atomic counter. |
+| `1` | Atomic Least Connections | Routes each request to the backend currently handling the fewest active connections, tracked with per-backend atomic counters. |
 
 ---
 
