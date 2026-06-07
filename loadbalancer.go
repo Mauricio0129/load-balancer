@@ -272,7 +272,91 @@ func (h *Handler) executeHealthAudit() {
 }
 
 func (h *Handler) recuperateDeadBackends() {
-	// to do: Implement logic to check the health of backends that were previously marked as unhealthy and add them back to the pool if they have recovered
+	if h.config.Mode == 0 {
+		data := h.backends.Load()
+		snapshot, ok := data.(map[string][]string) //active data
+
+		if !ok {
+			log.Printf("Error: Failed to assert connections snapshot")
+			return
+		}
+
+		replaceBackendsmap := make(map[string][]string) // empty shell
+
+		for domain, serversList := range h.config.Backends {
+			var healhtyList []string
+
+			activeset := make(map[string]bool)
+			for _, item := range snapshot[domain] {
+				activeset[item] = true
+			}
+
+			for _, server := range serversList {
+				if !activeset[server] {
+					url := "http://" + server + "/health"
+					resp, err := h.client.Get(url)
+
+					if err == nil && resp.StatusCode == http.StatusOK {
+						healhtyList = append(healhtyList, server)
+					}
+
+					if resp != nil {
+						resp.Body.Close()
+					}
+
+				} else {
+					healhtyList = append(healhtyList, server)
+				}
+
+			}
+			replaceBackendsmap[domain] = healhtyList
+		}
+		h.backends.Store(replaceBackendsmap)
+	} else {
+		data := h.connections.Load()
+		snapshot, ok := data.(map[string]map[string]*int64)
+
+		if !ok {
+			log.Printf("Error: Failed to assert connections snapshot")
+			return
+		}
+
+		//top level map to replace atomic val
+		replaceBackendsmap := make(map[string]map[string]*int64)
+
+		for host, serverList := range h.config.Backends {
+
+			//second levelmap to replace inner map
+			hostConnections := make(map[string]*int64)
+
+			//individual server
+			for _, server := range serverList {
+
+				if snapshot[host][server] == nil {
+					url := "http://" + server + "/health"
+					resp, err := h.client.Get(url)
+
+					if err == nil && resp.StatusCode == http.StatusOK {
+						hostConnections[server] = new(int64)
+					}
+
+					if resp != nil {
+						resp.Body.Close()
+					}
+
+				} else {
+
+					hostConnections[server] = snapshot[host][server]
+
+				}
+
+			}
+
+			replaceBackendsmap[host] = hostConnections
+		}
+		h.connections.Store(replaceBackendsmap)
+	}
+
 }
 
 // --- Inittialization logic  ---
